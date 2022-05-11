@@ -46,8 +46,10 @@
 #include "pl_explain.h"
 #include "catalog.h"
 #include "rolecmds.h"
+#include "pltsql_builtins.h"
 
 extern bool is_tsql_rowversion_or_timestamp_datatype(Oid oid);
+extern char *tsql_format_type_extended(Oid type_oid, int32 typemod, bits16 flags);
 
 /*****************************************
  * 			Catalog Hooks
@@ -121,6 +123,12 @@ static ExecutorRun_hook_type prev_ExecutorRun = NULL;
 static ExecutorFinish_hook_type prev_ExecutorFinish = NULL;
 static ExecutorEnd_hook_type prev_ExecutorEnd = NULL;
 
+
+/*****************************************
+ * 			TSQL Object Definition Hook
+ *****************************************/
+static tsql_format_type_extended_hook_type prev_tsql_format_type_extended_hook = NULL;
+
 /*****************************************
  * 			Install / Uninstall
  *****************************************/
@@ -188,6 +196,9 @@ InstallExtendedHooks(void)
 
 	prev_ExecutorEnd = ExecutorEnd_hook;
 	ExecutorEnd_hook = pltsql_ExecutorEnd;
+
+	prev_tsql_format_type_extended_hook = tsql_format_type_extended_hook;
+	tsql_format_type_extended_hook = tsql_format_type_extended;
 }
 
 void
@@ -217,6 +228,7 @@ UninstallExtendedHooks(void)
 	ExecutorRun_hook = prev_ExecutorRun;
 	ExecutorFinish_hook = prev_ExecutorFinish;
 	ExecutorEnd_hook = prev_ExecutorEnd;
+	tsql_format_type_extended_hook = prev_tsql_format_type_extended_hook;
 }
 
 /*****************************************
