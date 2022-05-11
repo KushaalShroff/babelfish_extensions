@@ -42,8 +42,10 @@
 #include "hooks.h"
 #include "catalog.h"
 #include "rolecmds.h"
+#include "pltsql_builtins.h"
 
 extern bool is_tsql_rowversion_or_timestamp_datatype(Oid oid);
+extern char *tsql_format_type_extended(Oid type_oid, int32 typemod, bits16 flags);
 
 /*****************************************
  * 			Catalog Hooks
@@ -103,6 +105,12 @@ static void bbf_object_access_hook(ObjectAccessType access, Oid classId, Oid obj
 static void revoke_func_permission_from_public(Oid objectId);
 static char *gen_func_arg_list(Oid objectId);
 
+
+/*****************************************
+ * 			TSQL Object Definition Hook
+ *****************************************/
+static tsql_format_type_extended_hook_type prev_tsql_format_type_extended_hook = NULL;
+
 /*****************************************
  * 			Install / Uninstall
  *****************************************/
@@ -155,6 +163,9 @@ InstallExtendedHooks(void)
 
 	prev_is_tsql_rowversion_or_timestamp_datatype_hook = is_tsql_rowversion_or_timestamp_datatype_hook;
 	is_tsql_rowversion_or_timestamp_datatype_hook = is_tsql_rowversion_or_timestamp_datatype;
+
+	prev_tsql_format_type_extended_hook = tsql_format_type_extended_hook;
+	tsql_format_type_extended_hook = tsql_format_type_extended;
 }
 
 void
@@ -179,6 +190,7 @@ UninstallExtendedHooks(void)
 	report_proc_not_found_error_hook = prev_report_proc_not_found_error_hook;
 	logicalrep_modify_slot_hook = prev_logicalrep_modify_slot_hook;
 	is_tsql_rowversion_or_timestamp_datatype_hook = prev_is_tsql_rowversion_or_timestamp_datatype_hook;
+	tsql_format_type_extended_hook = prev_tsql_format_type_extended_hook;
 }
 
 /*****************************************
