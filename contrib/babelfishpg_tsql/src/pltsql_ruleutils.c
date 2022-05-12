@@ -1739,24 +1739,10 @@ isSimpleNode(Node *node, Node *parentNode, int prettyFlags)
 	{
 		case T_Var:
 		case T_Const:
-		case T_Param:
 		case T_CoerceToDomainValue:
-		case T_SetToDefault:
-		case T_CurrentOfExpr:
 			/* single words: always simple */
 			return true;
 
-		case T_SubscriptingRef:
-		case T_ArrayExpr:
-		case T_RowExpr:
-		case T_CoalesceExpr:
-		case T_MinMaxExpr:
-		case T_SQLValueFunction:
-		case T_XmlExpr:
-		case T_NextValueExpr:
-		case T_NullIfExpr:
-		case T_Aggref:
-		case T_WindowFunc:
 		case T_FuncExpr:
 			/* function-like: name(..) or name[..] */
 			return true;
@@ -1812,10 +1798,7 @@ isSimpleNode(Node *node, Node *parentNode, int prettyFlags)
 			}
 			/* FALLTHROUGH */
 
-		case T_SubLink:
 		case T_NullTest:
-		case T_BooleanTest:
-		case T_DistinctExpr:
 			switch (nodeTag(parentNode))
 			{
 				case T_FuncExpr:
@@ -1829,16 +1812,6 @@ isSimpleNode(Node *node, Node *parentNode, int prettyFlags)
 						return true;	/* own parentheses */
 					}
 				case T_BoolExpr:	/* lower precedence */
-				case T_SubscriptingRef: /* other separators */
-				case T_ArrayExpr:	/* other separators */
-				case T_RowExpr: /* other separators */
-				case T_CoalesceExpr:	/* own parentheses */
-				case T_MinMaxExpr:	/* own parentheses */
-				case T_XmlExpr: /* own parentheses */
-				case T_NullIfExpr:	/* other separators */
-				case T_Aggref:	/* own parentheses */
-				case T_WindowFunc:	/* own parentheses */
-				case T_CaseExpr:	/* other separators */
 					return true;
 				default:
 					return false;
@@ -1879,17 +1852,6 @@ isSimpleNode(Node *node, Node *parentNode, int prettyFlags)
 							return false;
 						return true;	/* own parentheses */
 					}
-				case T_SubscriptingRef: /* other separators */
-				case T_ArrayExpr:	/* other separators */
-				case T_RowExpr: /* other separators */
-				case T_CoalesceExpr:	/* own parentheses */
-				case T_MinMaxExpr:	/* own parentheses */
-				case T_XmlExpr: /* own parentheses */
-				case T_NullIfExpr:	/* other separators */
-				case T_Aggref:	/* own parentheses */
-				case T_WindowFunc:	/* own parentheses */
-				case T_CaseExpr:	/* other separators */
-					return true;
 				default:
 					return false;
 			}
