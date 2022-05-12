@@ -661,6 +661,9 @@ add_cast_to(StringInfo buf, Oid typid)
 	typname = NameStr(typform->typname);
 	nspname = get_namespace_name(typform->typnamespace);
 
+	/*
+	 * TODO: Replace it with CAST(... AS ...) when used for operators
+	 */
 	appendStringInfo(buf, "::%s.%s",
 					 quote_identifier(nspname), quote_identifier(typname));
 
@@ -1234,6 +1237,10 @@ get_variable(Var *var, int levelsup, bool istoplevel, deparse_context *context)
 		attname = get_rte_attribute_name(rte, attnum);
 	}
 
+	if (istoplevel && !attname)
+	{
+		appendStringInfoString(buf, "CAST(");
+	}
 	if (refname && (context->varprefix || attname == NULL))
 	{
 		appendStringInfoString(buf, quote_identifier(refname));
@@ -1245,7 +1252,7 @@ get_variable(Var *var, int levelsup, bool istoplevel, deparse_context *context)
 	{
 		appendStringInfoChar(buf, '*');
 		if (istoplevel)
-			appendStringInfo(buf, "::%s",
+			appendStringInfo(buf, " AS %s)",
 							 format_type_with_typemod(var->vartype,
 													  var->vartypmod));
 	}
@@ -1272,10 +1279,13 @@ static void
 get_const_expr(Const *constval, deparse_context *context, int showtype)
 {
 	StringInfo	buf = context->buf;
+	StringInfo	valbuf;
 	Oid			typoutput;
 	bool		typIsVarlena;
 	char	   *extval;
 	bool		needlabel = false;
+
+	valbuf = makeStringInfo();
 
 	if (constval->constisnull)
 	{
@@ -1283,14 +1293,19 @@ get_const_expr(Const *constval, deparse_context *context, int showtype)
 		 * Always label the type of a NULL constant to prevent misdecisions
 		 * about type when reparsing.
 		 */
-		appendStringInfoString(buf, "NULL");
+		appendStringInfoString(valbuf, "NULL");
 		if (showtype >= 0)
 		{
-			appendStringInfo(buf, "::%s",
+			appendStringInfo(buf, "CAST(%s AS %s)", valbuf->data,
 							 format_type_with_typemod(constval->consttype,
 													  constval->consttypmod));
 			get_const_collation(constval, context);
 		}
+		else
+		{
+			appendStringInfoString(buf, valbuf->data);
+		}
+		pfree(valbuf->data);
 		return;
 	}
 
@@ -1313,10 +1328,10 @@ get_const_expr(Const *constval, deparse_context *context, int showtype)
 			 * seem that much prettier anyway.
 			 */
 			if (extval[0] != '-')
-				appendStringInfoString(buf, extval);
+				appendStringInfoString(valbuf, extval);
 			else
 			{
-				appendStringInfo(buf, "'%s'", extval);
+				appendStringInfo(valbuf, "'%s'", extval);
 				needlabel = true;	/* we must attach a cast */
 			}
 			break;
@@ -1331,24 +1346,24 @@ get_const_expr(Const *constval, deparse_context *context, int showtype)
 			if (isdigit((unsigned char) extval[0]) &&
 				strcspn(extval, "eE.") != strlen(extval))
 			{
-				appendStringInfoString(buf, extval);
+				appendStringInfoString(valbuf, extval);
 			}
 			else
 			{
-				appendStringInfo(buf, "'%s'", extval);
+				appendStringInfo(valbuf, "'%s'", extval);
 				needlabel = true;	/* we must attach a cast */
 			}
 			break;
 
 		case BOOLOID:
 			if (strcmp(extval, "t") == 0)
-				appendStringInfoString(buf, "true");
+				appendStringInfoString(valbuf, "true");
 			else
-				appendStringInfoString(buf, "false");
+				appendStringInfoString(valbuf, "false");
 			break;
 
 		default:
-			simple_quote_literal(buf, extval);
+			simple_quote_literal(valbuf, extval);
 			break;
 	}
 
@@ -1388,10 +1403,17 @@ get_const_expr(Const *constval, deparse_context *context, int showtype)
 			break;
 	}
 	if (needlabel || showtype > 0)
-		appendStringInfo(buf, "::%s",
+	{
+		appendStringInfo(buf, "CAST(%s AS %s)", valbuf->data,
 						 format_type_with_typemod(constval->consttype,
 												  constval->consttypmod));
+	}
+	else
+	{
+		appendStringInfoString(buf, valbuf->data);
+	}
 
+	pfree(valbuf->data);
 	get_const_collation(constval, context);
 }
 
@@ -2120,6 +2142,7 @@ get_coercion_expr(Node *arg, deparse_context *context,
 {
 	StringInfo	buf = context->buf;
 
+	appendStringInfoString(buf, "CAST(");
 	/*
 	 * Since parse_coerce.c doesn't immediately collapse application of
 	 * length-coercion functions to constants, what we'll typically see in
@@ -2158,7 +2181,7 @@ get_coercion_expr(Node *arg, deparse_context *context,
 	 * standardized on arg::resulttype, but CAST(arg AS resulttype) notation
 	 * would work fine.
 	 */
-	appendStringInfo(buf, "::%s",
+	appendStringInfo(buf, " AS %s)",
 					 format_type_with_typemod(resulttype, resulttypmod));
 }
 
