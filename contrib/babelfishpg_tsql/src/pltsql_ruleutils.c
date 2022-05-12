@@ -17,8 +17,6 @@
 #include "access/relation.h"
 #include "access/sysattr.h"
 #include "access/table.h"
-#include "catalog/dependency.h"
-#include "catalog/indexing.h"
 #include "catalog/pg_aggregate.h"
 #include "catalog/pg_am.h"
 #include "catalog/pg_authid.h"
@@ -166,6 +164,10 @@ typedef struct
 	List	   *outer_tlist;	/* referent for OUTER_VAR Vars */
 	List	   *inner_tlist;	/* referent for INNER_VAR Vars */
 	List	   *index_tlist;	/* referent for INDEX_VAR Vars */
+	/* Special namespace representing a function signature: */
+	char	   *funcname;
+	int			numargs;
+	char	  **argnames;
 } deparse_namespace;
 
 /*
@@ -332,7 +334,8 @@ static void pop_child_plan(deparse_namespace *dpns,
 static void add_cast_to(StringInfo buf, Oid typid);
 static const char *get_simple_binary_op_name(OpExpr *expr);
 static bool isSimpleNode(Node *node, Node *parentNode, int prettyFlags);
-
+static Plan *find_recursive_union(deparse_namespace *dpns,
+								  WorkTableScan *wtscan);
 static text *string_to_text(char *str);
 static char *tsql_get_constraintdef_worker(Oid constraintId, bool fullCommand,
 										 int prettyFlags, bool missing_ok);
@@ -523,9 +526,6 @@ tsql_get_constraintdef_worker(Oid constraintId, bool fullCommand,
 			break;
 	}
 
-	if (!conForm->convalidated)
-		appendStringInfoString(&buf, " NOT VALID");
-
 	/* Cleanup */
 	systable_endscan(scandesc);
 	table_close(relation, AccessShareLock);
@@ -609,10 +609,6 @@ generate_operator_name(Oid operid, Oid arg1, Oid arg2)
 		case 'l':
 			p_result = left_oper(NULL, list_make1(makeString(oprname)), arg2,
 								 true, -1);
-			break;
-		case 'r':
-			p_result = right_oper(NULL, list_make1(makeString(oprname)), arg1,
-								  true, -1);
 			break;
 		default:
 			elog(ERROR, "unrecognized oprkind: %d", operform->oprkind);
@@ -1494,35 +1490,14 @@ get_oper_expr(OpExpr *expr, deparse_context *context)
 	}
 	else
 	{
-		/* unary operator --- but which side? */
+		/* prefix operator */
 		Node	   *arg = (Node *) linitial(args);
-		HeapTuple	tp;
-		Form_pg_operator optup;
 
-		tp = SearchSysCache1(OPEROID, ObjectIdGetDatum(opno));
-		if (!HeapTupleIsValid(tp))
-			elog(ERROR, "cache lookup failed for operator %u", opno);
-		optup = (Form_pg_operator) GETSTRUCT(tp);
-		switch (optup->oprkind)
-		{
-			case 'l':
-				appendStringInfo(buf, "%s ",
-								 generate_operator_name(opno,
-														InvalidOid,
-														exprType(arg)));
-				get_rule_expr_paren(arg, context, true, (Node *) expr);
-				break;
-			case 'r':
-				get_rule_expr_paren(arg, context, true, (Node *) expr);
-				appendStringInfo(buf, " %s",
-								 generate_operator_name(opno,
-														exprType(arg),
-														InvalidOid));
-				break;
-			default:
-				elog(ERROR, "bogus oprkind: %d", optup->oprkind);
-		}
-		ReleaseSysCache(tp);
+		appendStringInfo(buf, "%s ",
+						 generate_operator_name(opno,
+												InvalidOid,
+												exprType(arg)));
+		get_rule_expr_paren(arg, context, true, (Node *) expr);
 	}
 	if (!PRETTY_PAREN(context))
 		appendStringInfoChar(buf, ')');
@@ -1697,7 +1672,7 @@ generate_function_name(Oid funcid, int nargs, List *argnames, Oid *argtypes,
 	if (!force_qualify)
 		p_result = func_get_detail(list_make1(makeString(proname)),
 								   NIL, argnames, nargs, argtypes,
-								   !use_variadic, true,
+								   !use_variadic, true, false,
 								   &p_funcid, &p_rettype,
 								   &p_retset, &p_nvargs, &p_vatype,
 								   &p_true_typeids, NULL);
@@ -2230,7 +2205,7 @@ get_coercion_expr(Node *arg, deparse_context *context,
  * of a given Plan node
  *
  * This sets the plan, outer_plan, inner_plan, outer_tlist, inner_tlist,
- * and index_tlist fields.  Caller is responsible for adjusting the ancestors
+ * and index_tlist fields.  Caller must already have adjusted the ancestors
  * list if necessary.  Note that the rtable, subplans, and ctes fields do
  * not need to change when shifting attention to different plan nodes in a
  * single plan tree.
@@ -2244,16 +2219,12 @@ set_deparse_plan(deparse_namespace *dpns, Plan *plan)
 	 * We special-case Append and MergeAppend to pretend that the first child
 	 * plan is the OUTER referent; we have to interpret OUTER Vars in their
 	 * tlists according to one of the children, and the first one is the most
-	 * natural choice.  Likewise special-case ModifyTable to pretend that the
-	 * first child plan is the OUTER referent; this is to support RETURNING
-	 * lists containing references to non-target relations.
+	 * natural choice.
 	 */
 	if (IsA(plan, Append))
 		dpns->outer_plan = linitial(((Append *) plan)->appendplans);
 	else if (IsA(plan, MergeAppend))
 		dpns->outer_plan = linitial(((MergeAppend *) plan)->mergeplans);
-	else if (IsA(plan, ModifyTable))
-		dpns->outer_plan = linitial(((ModifyTable *) plan)->plans);
 	else
 		dpns->outer_plan = outerPlan(plan);
 
@@ -2266,6 +2237,9 @@ set_deparse_plan(deparse_namespace *dpns, Plan *plan)
 	 * For a SubqueryScan, pretend the subplan is INNER referent.  (We don't
 	 * use OUTER because that could someday conflict with the normal meaning.)
 	 * Likewise, for a CteScan, pretend the subquery's plan is INNER referent.
+	 * For a WorkTableScan, locate the parent RecursiveUnion plan node and use
+	 * that as INNER referent.
+	 *
 	 * For ON CONFLICT .. UPDATE we just need the inner tlist to point to the
 	 * excluded expression's tlist. (Similar to the SubqueryScan we don't want
 	 * to reuse OUTER, it's used for RETURNING in some modify table cases,
@@ -2276,6 +2250,9 @@ set_deparse_plan(deparse_namespace *dpns, Plan *plan)
 	else if (IsA(plan, CteScan))
 		dpns->inner_plan = list_nth(dpns->subplans,
 									((CteScan *) plan)->ctePlanId - 1);
+	else if (IsA(plan, WorkTableScan))
+		dpns->inner_plan = find_recursive_union(dpns,
+												(WorkTableScan *) plan);
 	else if (IsA(plan, ModifyTable))
 		dpns->inner_plan = plan;
 	else
@@ -2314,4 +2291,27 @@ get_relation_name(Oid relid)
 	if (!relname)
 		elog(ERROR, "cache lookup failed for relation %u", relid);
 	return relname;
+}
+
+/*
+ * Locate the ancestor plan node that is the RecursiveUnion generating
+ * the WorkTableScan's work table.  We can match on wtParam, since that
+ * should be unique within the plan tree.
+ */
+static Plan *
+find_recursive_union(deparse_namespace *dpns, WorkTableScan *wtscan)
+{
+	ListCell   *lc;
+
+	foreach(lc, dpns->ancestors)
+	{
+		Plan	   *ancestor = (Plan *) lfirst(lc);
+
+		if (IsA(ancestor, RecursiveUnion) &&
+			((RecursiveUnion *) ancestor)->wtParam == wtscan->wtParam)
+			return ancestor;
+	}
+	elog(ERROR, "could not find RecursiveUnion for WorkTableScan with wtParam %d",
+		 wtscan->wtParam);
+	return NULL;
 }
