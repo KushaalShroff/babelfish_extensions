@@ -331,7 +331,6 @@ static void push_child_plan(deparse_namespace *dpns, Plan *plan,
 							deparse_namespace *save_dpns);
 static void pop_child_plan(deparse_namespace *dpns,
 						   deparse_namespace *save_dpns);
-static void add_cast_to(StringInfo buf, Oid typid);
 static const char *get_simple_binary_op_name(OpExpr *expr);
 static bool isSimpleNode(Node *node, Node *parentNode, int prettyFlags);
 static Plan *find_recursive_union(deparse_namespace *dpns,
@@ -364,33 +363,6 @@ tsql_get_constraintdef(PG_FUNCTION_ARGS)
 }
 
 PG_FUNCTION_INFO_V1(tsql_get_constraintdef);
-
-Datum
-tsql_get_constraintdef_ext(PG_FUNCTION_ARGS)
-{
-	Oid			constraintId = PG_GETARG_OID(0);
-	bool		pretty = PG_GETARG_BOOL(1);
-	int			prettyFlags;
-	char	   *res;
-
-	prettyFlags = pretty ? (PRETTYFLAG_PAREN | PRETTYFLAG_INDENT | PRETTYFLAG_SCHEMA) : PRETTYFLAG_INDENT;
-
-	res = tsql_get_constraintdef_worker(constraintId, false, prettyFlags, true);
-
-	if (res == NULL)
-		PG_RETURN_NULL();
-
-	PG_RETURN_TEXT_P(string_to_text(res));
-}
-
-/*
- * Internal version that returns a full ALTER TABLE ... ADD CONSTRAINT command
- */
-char *
-tsql_get_constraintdef_command(Oid constraintId)
-{
-	return tsql_get_constraintdef_worker(constraintId, true, 0, false);
-}
 
 /*
  * As of 9.4, we now use an MVCC snapshot for this.
@@ -635,39 +607,6 @@ generate_operator_name(Oid operid, Oid arg1, Oid arg2)
 	ReleaseSysCache(opertup);
 
 	return buf.data;
-}
-
-/*
- * Add a cast specification to buf.  We spell out the type name the hard way,
- * intentionally not using format_type_be().  This is to avoid corner cases
- * for CHARACTER, BIT, and perhaps other types, where specifying the type
- * using SQL-standard syntax results in undesirable data truncation.  By
- * doing it this way we can be certain that the cast will have default (-1)
- * target typmod.
- */
-static void
-add_cast_to(StringInfo buf, Oid typid)
-{
-	HeapTuple	typetup;
-	Form_pg_type typform;
-	char	   *typname;
-	char	   *nspname;
-
-	typetup = SearchSysCache1(TYPEOID, ObjectIdGetDatum(typid));
-	if (!HeapTupleIsValid(typetup))
-		elog(ERROR, "cache lookup failed for type %u", typid);
-	typform = (Form_pg_type) GETSTRUCT(typetup);
-
-	typname = NameStr(typform->typname);
-	nspname = get_namespace_name(typform->typnamespace);
-
-	/*
-	 * TODO: Replace it with CAST(... AS ...) when used for operators
-	 */
-	appendStringInfo(buf, "::%s.%s",
-					 quote_identifier(nspname), quote_identifier(typname));
-
-	ReleaseSysCache(typetup);
 }
 
 /*
