@@ -1442,12 +1442,12 @@ get_oper_expr(OpExpr *expr, deparse_context *context)
 		Node	   *arg1 = (Node *) linitial(args);
 		Node	   *arg2 = (Node *) lsecond(args);
 
-		get_rule_expr_paren(arg1, context, true, (Node *) expr);
+		get_rule_expr_paren(arg1, context, false, (Node *) expr);
 		appendStringInfo(buf, " %s ",
 						 generate_operator_name(opno,
 												exprType(arg1),
 												exprType(arg2)));
-		get_rule_expr_paren(arg2, context, true, (Node *) expr);
+		get_rule_expr_paren(arg2, context, false, (Node *) expr);
 	}
 	else
 	{
