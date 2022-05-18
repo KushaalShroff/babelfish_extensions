@@ -351,10 +351,36 @@ tsql_get_constraintdef(PG_FUNCTION_ARGS)
 	Oid			constraintId = PG_GETARG_OID(0);
 	int			prettyFlags;
 	char	   *res;
+	const char *sql_dialect_value_old;
 
-	prettyFlags = PRETTYFLAG_INDENT;
 
-	res = tsql_get_constraintdef_worker(constraintId, false, prettyFlags, true);
+	sql_dialect_value_old = GetConfigOption("babelfishpg_tsql.sql_dialect", true, true);
+	set_config_option("babelfishpg_tsql.sql_dialect", "tsql",
+					  (superuser() ? PGC_SUSET : PGC_USERSET),
+					  PGC_S_SESSION,
+					  GUC_ACTION_SAVE,
+					  true,
+					  0,
+					  false);
+
+	PG_TRY();
+	{
+		prettyFlags = PRETTYFLAG_INDENT;
+
+		res = tsql_get_constraintdef_worker(constraintId, false, prettyFlags, true);
+	}
+	PG_CATCH();
+	{
+		set_config_option("babelfishpg_tsql.sql_dialect", sql_dialect_value_old,
+						  (superuser() ? PGC_SUSET : PGC_USERSET),
+						  PGC_S_SESSION,
+						  GUC_ACTION_SAVE,
+						  true,
+						  0,
+						  false);
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
 
 	if (res == NULL)
 		PG_RETURN_NULL();
@@ -1309,7 +1335,10 @@ get_const_expr(Const *constval, deparse_context *context, int showtype)
 	pfree(extval);
 
 	if (showtype < 0)
+	{
+		appendStringInfoString(buf, valbuf->data);
 		return;
+	}
 
 	/*
 	 * For showtype == 0, append ::typename unless the constant will be
