@@ -67,7 +67,7 @@ tsql_format_type_extended(Oid type_oid, int32 typemod, bits16 flags)
 	fcinfo->args[0].value = ObjectIdGetDatum(type_oid);
 	fcinfo->args[0].isnull = false;
 	tsql_typename = (*translate_pg_type_to_tsql) (fcinfo);
-;
+
 	/*
 	 * If it is TSQL type then report it without any qualification.
 	 */
@@ -121,13 +121,18 @@ tsql_printTypmod(const char *typname, int32 typmod, Oid typmodout)
 	* In case of time, datetime2 or datetimeoffset print typmod
 	* info directly because it uses timestamp typmodout function
 	* which appends timezone data along with typmod which is not
-	* required.
+	* required. Directly print typename for smalldatetime as it
+	* doesn't support typmod.
 	*/
-	if(strcmp(typname, "time") == 0 ||
+	if (strcmp(typname, "time") == 0 ||
 	   strcmp(typname, "datetime2") == 0 ||
 	   strcmp(typname, "datetimeoffset") == 0)
 	{
 		res = psprintf("%s(%d)", typname, (int) typmod);
+	}
+	else if (strcmp(typname, "smalldatetime") == 0)
+	{
+		res = psprintf("%s", typname, (int) typmod);
 	}
 	else
 	{
