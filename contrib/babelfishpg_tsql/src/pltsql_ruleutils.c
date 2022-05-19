@@ -338,6 +338,9 @@ static Plan *find_recursive_union(deparse_namespace *dpns,
 static text *string_to_text(char *str);
 static char *tsql_get_constraintdef_worker(Oid constraintId, bool fullCommand,
 										 int prettyFlags, bool missing_ok);
+extern Datum translate_pg_type_to_tsql(PG_FUNCTION_ARGS);
+static char *tsql_printTypmod(const char *typname, int32 typmod, Oid typmodout);
+static char * tsql_format_type_with_typemod(Oid type_oid, int32 typemod);
 
 /*
  * tsql_get_constraintdef
@@ -1218,7 +1221,7 @@ get_variable(Var *var, int levelsup, bool istoplevel, deparse_context *context)
 		appendStringInfoChar(buf, '*');
 		if (istoplevel)
 			appendStringInfo(buf, " AS %s)",
-							 format_type_with_typemod(var->vartype,
+							 tsql_format_type_with_typemod(var->vartype,
 													  var->vartypmod));
 	}
 
@@ -1262,7 +1265,7 @@ get_const_expr(Const *constval, deparse_context *context, int showtype)
 		if (showtype >= 0)
 		{
 			appendStringInfo(buf, "CAST(%s AS %s)", valbuf->data,
-							 format_type_with_typemod(constval->consttype,
+							 tsql_format_type_with_typemod(constval->consttype,
 													  constval->consttypmod));
 			get_const_collation(constval, context);
 		}
@@ -1373,7 +1376,7 @@ get_const_expr(Const *constval, deparse_context *context, int showtype)
 	if (needlabel || showtype > 0)
 	{
 		appendStringInfo(buf, "CAST(%s AS %s)", valbuf->data,
-						 format_type_with_typemod(constval->consttype,
+						 tsql_format_type_with_typemod(constval->consttype,
 												  constval->consttypmod));
 	}
 	else
@@ -2150,7 +2153,7 @@ get_coercion_expr(Node *arg, deparse_context *context,
 	 * would work fine.
 	 */
 	appendStringInfo(buf, " AS %s)",
-					 format_type_with_typemod(resulttype, resulttypmod));
+					 tsql_format_type_with_typemod(resulttype, resulttypmod));
 }
 
 /*
@@ -2267,4 +2270,145 @@ find_recursive_union(deparse_namespace *dpns, WorkTableScan *wtscan)
 	elog(ERROR, "could not find RecursiveUnion for WorkTableScan with wtParam %d",
 		 wtscan->wtParam);
 	return NULL;
+}
+
+/*
+ * tsql_format_type_extended
+ *		Generate a possibly-qualified TSQL type name.
+ *
+ * The default behavior is to only qualify if the type is not in the search
+ * path, to ignore the given typmod, and to raise an error if a non-existent
+ * type_oid is given. It assumes that array type won't be supplied as input as
+ * TSQL doesn't support array types.
+ *
+ * Refer format_type_extended() from format_type.c for flags documentation.
+ *
+ * Returns a palloc'd string.
+ */
+char *
+tsql_format_type_extended(Oid type_oid, int32 typemod, bits16 flags)
+{
+	HeapTuple		tuple;
+	Form_pg_type	typeform;
+	Oid				array_base_type;
+	Datum			tsql_typename;
+	char		   *buf;
+	bool			with_typemod;
+
+	if (type_oid == InvalidOid && (flags & FORMAT_TYPE_ALLOW_INVALID) != 0)
+		return pstrdup("-");
+
+	tuple = SearchSysCache1(TYPEOID, ObjectIdGetDatum(type_oid));
+	if (!HeapTupleIsValid(tuple))
+	{
+		if ((flags & FORMAT_TYPE_ALLOW_INVALID) != 0)
+			return pstrdup("???");
+		else
+			elog(ERROR, "cache lookup failed for type %u", type_oid);
+	}
+	typeform = (Form_pg_type) GETSTRUCT(tuple);
+
+	with_typemod = (flags & FORMAT_TYPE_TYPEMOD_GIVEN) != 0 && (typemod >= 0);
+
+	buf = NULL;
+	LOCAL_FCINFO(fcinfo, 1);
+
+	InitFunctionCallInfoData(*fcinfo, NULL, 0, InvalidOid, NULL, NULL);
+	fcinfo->args[0].value = ObjectIdGetDatum(type_oid);
+	fcinfo->args[0].isnull = false;
+	tsql_typename = (*translate_pg_type_to_tsql) (fcinfo);
+
+	/*
+	 * If it is TSQL type then report it without any qualification.
+	 */
+	if (tsql_typename)
+		buf = text_to_cstring(DatumGetTextPP(tsql_typename));
+
+	if (buf == NULL)
+	{
+		/*
+		 * Default handling: report the name as it appears in the catalog.
+		 * Here, we must qualify the name if it is not visible in the search
+		 * path or if caller requests it; and we must double-quote it if it's
+		 * not a standard identifier or if it matches any keyword.
+		 */
+		char	   *nspname;
+		char	   *typname;
+
+		if ((flags & FORMAT_TYPE_FORCE_QUALIFY) == 0 &&
+			TypeIsVisible(type_oid))
+			nspname = NULL;
+		else
+			nspname = get_namespace_name_or_temp(typeform->typnamespace);
+
+		typname = NameStr(typeform->typname);
+
+		buf = quote_qualified_identifier(nspname, typname);
+	}
+
+	if (with_typemod)
+	{
+		buf = tsql_printTypmod(buf, typemod, typeform->typmodout);
+	}
+
+	ReleaseSysCache(tuple);
+
+	return buf;
+}
+
+/*
+ * Add typmod decoration to the basic type name
+ */
+static char *
+tsql_printTypmod(const char *typname, int32 typmod, Oid typmodout)
+{
+	char	   *res;
+
+	/* Shouldn't be called if typmod is -1 */
+	Assert(typmod >= 0);
+
+	/*
+	* In case of time, datetime2 or datetimeoffset print typmod
+	* info directly because it uses timestamp typmodout function
+	* which appends timezone data along with typmod which is not
+	* required. Directly print typename for smalldatetime as it
+	* doesn't support typmod.
+	*/
+	if (strcmp(typname, "time") == 0 ||
+	   strcmp(typname, "datetime2") == 0 ||
+	   strcmp(typname, "datetimeoffset") == 0)
+	{
+		res = psprintf("%s(%d)", typname, (int) typmod);
+	}
+	else if (strcmp(typname, "smalldatetime") == 0)
+	{
+		res = pstrdup(typname);
+	}
+	else
+	{
+		if (typmodout == InvalidOid)
+		{
+			/* Default behavior: just print the integer typmod with parens */
+			res = psprintf("%s(%d)", typname, (int) typmod);
+		}
+		else
+		{
+			/* Use the type-specific typmodout procedure */
+			char	   *tmstr;
+
+			tmstr = DatumGetCString(OidFunctionCall1(typmodout,
+													 Int32GetDatum(typmod)));
+			res = psprintf("%s%s", typname, tmstr);
+		}
+	}
+	return res;
+}
+
+/*
+ * This version allows a nondefault typemod to be specified.
+ */
+static char *
+tsql_format_type_with_typemod(Oid type_oid, int32 typemod)
+{
+	return tsql_format_type_extended(type_oid, typemod, FORMAT_TYPE_TYPEMOD_GIVEN);
 }
