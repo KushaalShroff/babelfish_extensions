@@ -132,7 +132,7 @@ tsql_printTypmod(const char *typname, int32 typmod, Oid typmodout)
 	}
 	else if (strcmp(typname, "smalldatetime") == 0)
 	{
-		res = psprintf("%s", typname, (int) typmod);
+		res = pstrdup(typname);
 	}
 	else
 	{
