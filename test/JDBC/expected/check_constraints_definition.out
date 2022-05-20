@@ -3,11 +3,7 @@ create table test_tsql_const(
 	c_bit sys.bit check(c_bit <> cast(1 as sys.bit)),
 	check(c_int < 10),
 	c_smallint smallint check(c_smallint < cast(cast(CAST('20' AS smallint) as sql_variant) as smallint)),
-<<<<<<< Updated upstream
 	c_binary binary(8) check(c_binary > cast(0xfe as binary(8))),
-=======
-	c_binary binary check(c_binary > cast(0xfe as binary)),
->>>>>>> Stashed changes
 );
 go
 
@@ -54,11 +50,7 @@ text
 ((c_bit <> CAST((1) AS bit)))
 ((c_int < 10))
 ((c_smallint < CAST((CAST((CAST('20' AS smallint)) AS sql_variant)) AS smallint)))
-<<<<<<< Updated upstream
 ((c_binary > CAST((CAST('0xfe' AS bbf_binary(8))) AS binary(8))))
-=======
-((c_binary > CAST((CAST('0xfe' AS bbf_binary(30))) AS binary(30))))
->>>>>>> Stashed changes
 ~~END~~
 
 
