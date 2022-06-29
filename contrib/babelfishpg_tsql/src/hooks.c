@@ -5,6 +5,7 @@
 #include "access/table.h"
 #include "catalog/heap.h"
 #include "access/xact.h"
+#include "access/relation.h"
 #include "catalog/namespace.h"
 #include "catalog/objectaccess.h"
 #include "catalog/pg_attrdef_d.h"
@@ -13,6 +14,7 @@
 #include "catalog/pg_type.h"
 #include "commands/copy.h"
 #include "commands/tablecmds.h"
+#include "commands/view.h"
 #include "funcapi.h"
 #include "nodes/makefuncs.h"
 #include "nodes/nodeFuncs.h"
@@ -43,6 +45,7 @@
 #include "hooks.h"
 #include "catalog.h"
 #include "rolecmds.h"
+#include "session.h"
 
 extern bool is_tsql_rowversion_or_timestamp_datatype(Oid oid);
 
@@ -77,6 +80,7 @@ static int find_attr_by_name_from_column_def_list(const char *attributeName, Lis
  * 			Utility Hooks
  *****************************************/
 static void pltsql_report_proc_not_found_error(List *names, List *argnames, int nargs, ParseState *pstate, int location, bool proc_call);
+static void pltsql_store_view_definition(const char *queryString, ObjectAddress address);
 
 /*****************************************
  * 			Replication Hooks
@@ -94,6 +98,7 @@ static resolve_target_list_unknowns_hook_type prev_resolve_target_list_unknowns_
 static find_attr_by_name_from_column_def_list_hook_type prev_find_attr_by_name_from_column_def_list_hook = NULL;
 static find_attr_by_name_from_relation_hook_type prev_find_attr_by_name_from_relation_hook = NULL;
 static report_proc_not_found_error_hook_type prev_report_proc_not_found_error_hook = NULL;
+static store_view_definition_hook_type prev_store_view_definition_hook = NULL;
 static logicalrep_modify_slot_hook_type prev_logicalrep_modify_slot_hook = NULL;
 static is_tsql_rowversion_or_timestamp_datatype_hook_type prev_is_tsql_rowversion_or_timestamp_datatype_hook = NULL;
 
@@ -156,6 +161,9 @@ InstallExtendedHooks(void)
 	prev_report_proc_not_found_error_hook = report_proc_not_found_error_hook;
 	report_proc_not_found_error_hook = pltsql_report_proc_not_found_error;
 
+	prev_store_view_definition_hook = store_view_definition_hook;
+	store_view_definition_hook = pltsql_store_view_definition;
+
 	prev_logicalrep_modify_slot_hook = logicalrep_modify_slot_hook;
 	logicalrep_modify_slot_hook = logicalrep_modify_slot;
 
@@ -184,6 +192,7 @@ UninstallExtendedHooks(void)
 	find_attr_by_name_from_column_def_list_hook = prev_find_attr_by_name_from_column_def_list_hook;
 	find_attr_by_name_from_relation_hook = prev_find_attr_by_name_from_relation_hook;
 	report_proc_not_found_error_hook = prev_report_proc_not_found_error_hook;
+	store_view_definition_hook = prev_store_view_definition_hook;
 	logicalrep_modify_slot_hook = prev_logicalrep_modify_slot_hook;
 	is_tsql_rowversion_or_timestamp_datatype_hook = prev_is_tsql_rowversion_or_timestamp_datatype_hook;
 }
@@ -1323,5 +1332,45 @@ modify_insert_stmt(InsertStmt *stmt, Oid relid)
 	stmt->cols = insert_col_list;
 	systable_endscan(scan);
 	table_close(pg_attribute, AccessShareLock);
+}
 
+/*
+ * Stores view object's TSQL definition to bbf_object_def catalog
+ */
+static void
+pltsql_store_view_definition(const char *queryString, ObjectAddress address)
+{
+	/* Store TSQL definition */
+	Relation	bbf_object_def_rel;
+	TupleDesc	bbf_object_def_rel_dsc;
+	Datum		new_record[BBF_OBJECT_DEF_NUM_COLS];
+	bool		new_record_nulls[BBF_OBJECT_DEF_NUM_COLS];
+	HeapTuple	tuple, reltup;
+	Form_pg_class	form_reltup;
+
+	/* Skip if it is for sysdatabases while creating logical database */
+	if(strcmp("(CREATE LOGICAL DATABASE )", queryString) == 0)
+		return;
+
+	/* Fetch the object details from Relation */
+	reltup = SearchSysCache1(RELOID, ObjectIdGetDatum(address.objectId));
+	form_reltup = (Form_pg_class) GETSTRUCT(reltup);
+
+	bbf_object_def_rel = table_open(bbf_object_def_oid, RowExclusiveLock);
+	bbf_object_def_rel_dsc = RelationGetDescr(bbf_object_def_rel);
+
+	MemSet(new_record_nulls, false, sizeof(new_record_nulls));
+
+	new_record[0] = PointerGetDatum(get_cur_db_name());
+	new_record[1] = PointerGetDatum(get_logical_schema_name(get_namespace_name(form_reltup->relnamespace), true));
+	new_record[2] = CStringGetTextDatum(form_reltup->relname.data);
+	new_record[3] = CStringGetTextDatum(queryString);
+
+	tuple = heap_form_tuple(bbf_object_def_rel_dsc,
+							new_record, new_record_nulls);
+
+	CatalogTupleInsert(bbf_object_def_rel, tuple);
+
+	ReleaseSysCache(reltup);
+	table_close(bbf_object_def_rel, RowExclusiveLock);
 }
