@@ -915,6 +915,7 @@ typedef struct PLtsql_stmt_insert_bulk
     char  *table_name;
     char  *schema_name;
     char  *db_name;
+    char  *column_refs;
 } PLtsql_stmt_insert_bulk;
 
 /*
@@ -1557,6 +1558,8 @@ typedef struct PLtsql_protocol_plugin
 									Datum *Values, const char *Nulls);
 
 	int (*pltsql_get_generic_typmod) (Oid funcid, int nargs, Oid declared_oid);
+
+	bool *pltsql_is_fmtonly_stmt;
 
 } PLtsql_protocol_plugin;
 

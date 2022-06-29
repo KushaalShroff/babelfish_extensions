@@ -176,6 +176,7 @@ int			pltsql_extra_errors;
 bool		pltsql_debug_parser = false;
 char       *identity_insert_string;
 bool		output_update_transformation = false;
+bool		output_into_insert_transformation = false;
 char       *update_delete_target_alias = NULL;
 int			pltsql_trigger_depth = 0;
 
@@ -3198,6 +3199,7 @@ _PG_init(void)
 		(*pltsql_protocol_plugin_ptr)->pltsql_get_login_default_db = &get_login_default_db;
 		(*pltsql_protocol_plugin_ptr)->pltsql_is_login = &is_login;
 		(*pltsql_protocol_plugin_ptr)->pltsql_get_generic_typmod = &probin_read_ret_typmod;
+		(*pltsql_protocol_plugin_ptr)->pltsql_is_fmtonly_stmt = &pltsql_fmtonly;
 	}
 
 	*pltsql_config_ptr = &myConfig;
@@ -3318,8 +3320,15 @@ _PG_fini(void)
 static void terminate_batch(bool send_error, bool compile_error)
 {
 	bool error_mapping_failed = false;
+	int rc;
 
 	elog(DEBUG2, "TSQL TXN finish current batch, error : %d compilation error : %d", send_error, compile_error);
+
+	/*
+	 * Disconnect from SPI manager
+	 */
+	if ((rc = SPI_finish()) != SPI_OK_FINISH)
+		elog(ERROR, "SPI_finish failed: %s", SPI_result_code_string(rc));
 
 	if (send_error)
 	{
@@ -3353,6 +3362,7 @@ static void terminate_batch(bool send_error, bool compile_error)
 				 */
 				while (ActiveSnapshotSet())
 					PopActiveSnapshot();
+				pltsql_snapshot_portal->portalSnapshot = NULL;
 			}
 			MarkPortalDone(pltsql_snapshot_portal);
 			PortalDrop(pltsql_snapshot_portal, false);
@@ -3547,12 +3557,6 @@ pltsql_call_handler(PG_FUNCTION_ARGS)
 	ENRDropTempTables(currentQueryEnv);
 	remove_queryEnv();
 	pltsql_revert_guc(save_nestlevel);
-
-	/*
-	 * Disconnect from SPI manager
-	 */
-	if ((rc = SPI_finish()) != SPI_OK_FINISH)
-		elog(ERROR, "SPI_finish failed: %s", SPI_result_code_string(rc));
 
 	terminate_batch(false /* send_error */, false /* compile_error */);
 
@@ -3793,12 +3797,6 @@ pltsql_inline_handler(PG_FUNCTION_ARGS)
 		FreeExecutorState(simple_eval_estate);
 		pltsql_free_function_memory(func);
 	}
-	/*
-	 * Disconnect from SPI manager
-	 */
-	if ((rc = SPI_finish()) != SPI_OK_FINISH)
-		elog(ERROR, "SPI_finish failed: %s", SPI_result_code_string(rc));
-
 	sql_dialect = saved_dialect;
 	
 	terminate_batch(false /* send_error */, false /* compile_error */);

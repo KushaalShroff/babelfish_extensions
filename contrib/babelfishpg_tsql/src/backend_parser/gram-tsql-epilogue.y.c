@@ -811,7 +811,7 @@ tsql_insert_output_into_cte_transformation(WithClause *opt_with_clause, RangeVar
 	internal_ctename = pstrdup(ctename);
 	
 	// PreparableStmt inside CTE
-	i->cols = NIL;
+	i->cols = insert_column_list;
 	i->selectStmt = tsql_output_insert_rest->selectStmt;
 	i->relation = insert_target;
 	i->onConflictClause = NULL;
@@ -909,6 +909,9 @@ tsql_insert_output_into_cte_transformation(WithClause *opt_with_clause, RangeVar
 		w->location = 1;
 		tsql_output_insert_rest->withClause = w;
 	}
+
+	output_into_insert_transformation = true; 
+	
 	return (Node *) tsql_output_insert_rest;
 }
 
@@ -1251,7 +1254,8 @@ get_transformed_output_list(List *tsql_output_clause)
 			{
 				ResTarget *target = makeNode(ResTarget);
 				ColumnRef  *cref = (ColumnRef *) node;
- 
+				local_variable = false;
+				
 				if(!strcmp(strVal(linitial(cref->fields)), "deleted") && list_length(cref->fields) >= 2)
 				{
 					if (IsA((Node*) llast(cref->fields), String))
@@ -1287,7 +1291,6 @@ get_transformed_output_list(List *tsql_output_clause)
 				}
 				else
 				{
-					local_variable = false;
 					if(!strncmp(strVal(linitial(cref->fields)), "@", 1) && estate)
 					{
 						for (i = 0; i < estate->ndatums; i++)
